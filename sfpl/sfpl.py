@@ -12,11 +12,12 @@ from . import exceptions
 
 # Regex Patterns
 
-id_regex = "https://sfpl.bibliocommons.com/.+/(\d+)"
-book_page_regex = "[\d,]+ to [\d,]+ of ([\d,]+) results?"
-list_page_regex = "[\d,]+ - [\d,]+ of ([\d,]+) items?"
+id_regex = r"https://sfpl.bibliocommons.com/.+/(\d+)"
+book_page_regex = r"[\d,]+ to [\d,]+ of ([\d,]+) results?"
+list_page_regex = r"[\d,]+ - [\d,]+ of ([\d,]+) items?"
 
 
+# TODO: assess currency.
 class User:
     """A library user account.
 
@@ -254,6 +255,16 @@ class Account(User):
         if not resp.json()["logged_in"]:
             raise exceptions.LoginError(resp.json()["messages"][0]["key"])
 
+    def loggedIn(self):
+        return not bool(
+            self.session.get("https://sfpl.bibliocommons.com/user_dashboard").history
+        )
+
+    def logout(self):
+        """Logs out of the account."""
+        self.session.get("https://sfpl.bibliocommons.com/user/logout")
+
+    # TODO: assess currency.
     def hold(self, book, branch):
         """Holds the book.
 
@@ -291,6 +302,7 @@ class Account(User):
         if not resp.json()["success"]:
             raise exceptions.HoldError(resp.json()["messages"][0]["key"])
 
+    # TODO: assess currency.
     def cancelHold(self, book):
         """Cancels the hold on the book.
 
@@ -340,6 +352,7 @@ class Account(User):
         else:
             raise exceptions.NotOnHold(book.title)
 
+    # TODO: assess currency.
     def renew(self, book):
         """Renews the hold on the book.
 
@@ -404,6 +417,7 @@ class Account(User):
         else:
             raise exceptions.NotCheckedOut(book.title)
 
+    # TODO: assess currency.
     def follow(self, user):
         """Follows the user.
 
@@ -433,6 +447,7 @@ class Account(User):
         if not resp.json()["logged_in"]:
             raise exceptions.NotLoggedIn
 
+    # TODO: assess currency.
     def unfollow(self, user):
         """Unfollows the user.
 
@@ -462,7 +477,7 @@ class Account(User):
         if not resp.json()["logged_in"]:
             raise exceptions.NotLoggedIn
 
-    def getCheckouts(self):
+    def getCheckouts(self) -> list["Book"]:
         """Gets the user's checked out items.
 
         Returns:
@@ -470,16 +485,9 @@ class Account(User):
         """
         resp = self.session.get("https://sfpl.bibliocommons.com/checkedout")
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        script_tag = soup.find(
-            "script", {"type": "application/json", "data-iso-key": "_0"}
-        )
-        if not script_tag:
-            raise exceptions.NotLoggedIn
+        return self.parseCheckouts(resp.text)
 
-        return self.parseBibs(json.loads(script_tag.text))
-
-    def getHolds(self):
+    def getHolds(self) -> list["Book"]:
         """Gets the user's held items.
 
         Returns:
@@ -489,78 +497,60 @@ class Account(User):
             "https://sfpl.bibliocommons.com/holds/index/not_yet_available"
         )
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        return self.parseHolds(resp.text)
+
+    @staticmethod
+    def parseCheckouts(response_text: str) -> list["Book"]:
+        data = Account.__extract_data(response_text)
+
+        bibs = data["entities"]["bibs"].values()
+        checkouts = {b["metadataId"]: b for b in data["entities"]["checkouts"].values()}
+
+        # TODO: determine a reasonable status string spec.
+        def parseStatus(id: str) -> str:
+            return "Due {}".format(checkouts[id]["dueDate"])
+
+        return [
+            Book(Account._parseDataDict(b), status=parseStatus(b["id"])) for b in bibs
+        ]
+
+    @staticmethod
+    def parseHolds(response_text: str) -> list["Book"]:
+        data = Account.__extract_data(response_text)
+
+        bibs = data["entities"]["bibs"].values()
+        holds = {b["metadataId"]: b for b in data["entities"]["holds"].values()}
+
+        # TODO: determine a reasonable status string spec.
+        def parseStatus(id: str) -> str:
+            status = holds[id]["status"]
+            if holds[id].get("holdText"):
+                status = "{}: {}".format(status, holds[id]["holdText"])
+            return status
+
+        return [
+            Book(Account._parseDataDict(b), status=parseStatus(b["id"])) for b in bibs
+        ]
+
+    @staticmethod
+    def _parseDataDict(bib: dict) -> dict[str, str]:
+        return {
+            "title": bib["briefInfo"]["title"],
+            "subtitle": bib["briefInfo"]["subtitle"],
+            "author": " & ".join(bib["briefInfo"]["authors"]),
+            "_id": bib["id"],
+        }
+
+    @staticmethod
+    def __extract_data(response_text: str) -> dict:
+        soup = BeautifulSoup(response_text, "html.parser")
         script_tag = soup.find(
             "script", {"type": "application/json", "data-iso-key": "_0"}
         )
         if not script_tag:
             raise exceptions.NotLoggedIn
 
-        return self.parseBibs(json.loads(script_tag.text))
-
-    @staticmethod
-    def parseBibs(response):
-        return [
-            Book(
-                {
-                    "title": b["briefInfo"]["title"],
-                    "subtitle": b["briefInfo"]["subtitle"],
-                    "author": " & ".join(b["briefInfo"]["authors"]),
-                    "_id": b["id"],
-                }
-            )
-            for b in response["entities"]["bibs"].values()
-        ]
-
-    @staticmethod
-    def parseHolds(response):
-        books = response("div", lambda class_: class_ and class_.startswith("listItem"))
-
-        book_data = []
-
-        for book in books:
-            if book.find(class_="hold_status in_transit"):
-                location = book.find(class_="pick_up_location")
-                location.span.clear()
-                status = "In Transit to {}".format(location.text.strip())
-
-            elif book.find(class_="pick_up_date"):
-                status = book.find(class_="pick_up_date").text.strip()
-
-            else:
-                status = book.find(class_="hold_position").text.strip()
-
-            book_data.append(
-                Book(
-                    {
-                        "title": book.find(testid="bib_link").text,
-                        "author": book.find(testid="author_search").text
-                        if book.find(testid="author_search")
-                        else None,
-                        "subtitle": book.find(class_="subTitle").text
-                        if book.find(class_="subTitle")
-                        else None,
-                        "_id": int(
-                            "".join(
-                                s
-                                for s in book.find(testid="bib_link")["href"]
-                                if s.isdigit()
-                            )
-                        ),
-                    },
-                    status=status,
-                )
-            )
-        return book_data
-
-    def loggedIn(self):
-        return not bool(
-            self.session.get("https://sfpl.bibliocommons.com/user_dashboard").history
-        )
-
-    def logout(self):
-        """Logs out of the account."""
-        self.session.get("https://sfpl.bibliocommons.com/user/logout")
+        return json.loads(script_tag.text)
 
 
 class Book:
@@ -570,7 +560,7 @@ class Book:
         title (str): The title of the book.
         author (sre): The book's author's name.
         subtitle (str): The subtitle of the book.
-        _id (int): SFPL's _id for the book.
+        _id (str): SFPL's _id for the book.
         status (str): The book's status, if applicable. (e.g. duedate, hold position)
     """
 

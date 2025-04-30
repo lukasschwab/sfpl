@@ -253,7 +253,6 @@ class Account(User):
 
         if not resp.json()["logged_in"]:
             raise exceptions.LoginError(resp.json()["messages"][0]["key"])
-        
 
     def hold(self, book, branch):
         """Holds the book.
@@ -472,7 +471,9 @@ class Account(User):
         resp = self.session.get("https://sfpl.bibliocommons.com/checkedout")
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        script_tag = soup.find('script', {'type': 'application/json', 'data-iso-key': '_0'})
+        script_tag = soup.find(
+            "script", {"type": "application/json", "data-iso-key": "_0"}
+        )
         if not script_tag:
             raise exceptions.NotLoggedIn
 
@@ -489,7 +490,9 @@ class Account(User):
         )
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        script_tag = soup.find('script', {'type': 'application/json', 'data-iso-key': '_0'})
+        script_tag = soup.find(
+            "script", {"type": "application/json", "data-iso-key": "_0"}
+        )
         if not script_tag:
             raise exceptions.NotLoggedIn
 
@@ -497,12 +500,17 @@ class Account(User):
 
     @staticmethod
     def parseBibs(response):
-        return [Book({
-            "title": b["briefInfo"]["title"],
-            "subtitle": b["briefInfo"]["subtitle"],
-            "author": " & ".join(b["briefInfo"]["authors"]),
-            "_id": b["id"]
-        }) for b in response["entities"]["bibs"].values()]
+        return [
+            Book(
+                {
+                    "title": b["briefInfo"]["title"],
+                    "subtitle": b["briefInfo"]["subtitle"],
+                    "author": " & ".join(b["briefInfo"]["authors"]),
+                    "_id": b["id"],
+                }
+            )
+            for b in response["entities"]["bibs"].values()
+        ]
 
     @staticmethod
     def parseHolds(response):

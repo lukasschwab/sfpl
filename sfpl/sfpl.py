@@ -227,8 +227,21 @@ class Account(User):
         Raises:
             LoginError: If we aren't redirected to the main page after login.
         """
-        self.session = requests.Session()
 
+        self.session = requests.Session()
+        self.login(barcode, pin)
+
+        main = BeautifulSoup(
+            self.session.get("https://sfpl.bibliocommons.com/user_dashboard").text,
+            "lxml",
+        )
+
+        super().__init__(
+            main.find(class_="cp_user_card")["data-name"],
+            main.find(class_="cp_user_card")["data-id"],
+        )
+
+    def login(self, barcode, pin):
         resp = self.session.post(
             "https://sfpl.bibliocommons.com/user/login",
             data={"name": barcode, "user_pin": pin},
@@ -240,16 +253,7 @@ class Account(User):
 
         if not resp.json()["logged_in"]:
             raise exceptions.LoginError(resp.json()["messages"][0]["key"])
-
-        main = BeautifulSoup(
-            self.session.get("https://sfpl.bibliocommons.com/user_dashboard").text,
-            "lxml",
-        )
-
-        super().__init__(
-            main.find(class_="cp_user_card")["data-name"],
-            main.find(class_="cp_user_card")["data-id"],
-        )
+        
 
     def hold(self, book, branch):
         """Holds the book.
@@ -467,10 +471,12 @@ class Account(User):
         """
         resp = self.session.get("https://sfpl.bibliocommons.com/checkedout")
 
-        if resp.history:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        script_tag = soup.find('script', {'type': 'application/json', 'data-iso-key': '_0'})
+        if not script_tag:
             raise exceptions.NotLoggedIn
 
-        return self.parseCheckouts(BeautifulSoup(resp.text, "lxml"))
+        return self.parseBibs(json.loads(script_tag.text))
 
     def getHolds(self):
         """Gets the user's held items.
@@ -482,45 +488,21 @@ class Account(User):
             "https://sfpl.bibliocommons.com/holds/index/not_yet_available"
         )
 
-        if resp.history:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        script_tag = soup.find('script', {'type': 'application/json', 'data-iso-key': '_0'})
+        if not script_tag:
             raise exceptions.NotLoggedIn
 
-        return self.parseHolds(BeautifulSoup(resp.text, "lxml"))
+        return self.parseBibs(json.loads(script_tag.text))
 
     @staticmethod
-    def parseCheckouts(response):
-        return [
-            Book(
-                {
-                    "title": book.find(class_="title title_extended").text,
-                    "author": book.find(testid="author_search").text
-                    if book.find(testid="author_search")
-                    else None,
-                    "subtitle": book.find(class_="subTitle").text
-                    if book.find(class_="subTitle")
-                    else None,
-                    "_id": int(
-                        "".join(
-                            s
-                            for s in book.find(testid="bib_link")["href"]
-                            if s.isdigit()
-                        )
-                    ),
-                },
-                status="Due {}".format(
-                    book(class_="checkedout_status out")[1].text.replace("\xa0", "")
-                )
-                if len(book(class_="checkedout_status out")) == 2
-                else (
-                    book.find(class_="checkedout_status overdue").text.strip()
-                    if book.find(class_="checkedout_status overdue")
-                    else book.find(class_="checkedout_status coming_due").text.strip()
-                ),
-            )
-            for book in response(
-                "div", lambda class_: class_ and class_.startswith("listItem")
-            )
-        ]
+    def parseBibs(response):
+        return [Book({
+            "title": b["briefInfo"]["title"],
+            "subtitle": b["briefInfo"]["subtitle"],
+            "author": " & ".join(b["briefInfo"]["authors"]),
+            "_id": b["id"]
+        }) for b in response["entities"]["bibs"].values()]
 
     @staticmethod
     def parseHolds(response):

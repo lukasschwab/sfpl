@@ -36,7 +36,7 @@ class TestScraper(unittest.TestCase):
             ),
             encoding="utf-8",
         ) as mockup:
-            result = sfpl.Account.parseCheckouts(BeautifulSoup(mockup.read(), "lxml"))
+            result = sfpl.Account.parseBibs(BeautifulSoup(mockup.read(), "lxml"))
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].title, "Basics of Web Design")
